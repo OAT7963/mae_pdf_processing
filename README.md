@@ -37,7 +37,14 @@ For queries, reach out at ongaunter@gmail.com.
 
 ## Finally, process the file by clicking on "Process Files and Export to Excel" 
 
-1. It will process all of your pdfs that you put into the folder and convert them into Excel format for you to perform further analysis and detailed tracking of your income and expenses. 
+1. It will process all of your pdfs that you put into the folder and convert them into Excel format for you to perform further analysis and detailed tracking of your income and expenses.
+
+
+# OUTPUT, this is how the Excel File output looks like
+
+The below is for Credit Card Bank Statment. As for Debit card, you will see additional columns like "Money in, Money Out" and "Statement Balance"
+
+![alt text](/image/output_cc_example.png)
 
 
 
