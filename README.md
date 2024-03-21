@@ -1,7 +1,9 @@
 
 # MAE Maybank Credit and Debit Card Statement Processing
 
-Efficient processing of Maybank bank statements for Credit and Debit, converting PDFs to Excel for better tracking. Current solutions are scarce, so I've developed a completely free Python program with a user-friendly graphical interface.
+I've created a program for the processing of Maybank bank statements for Credit and Debit PDF bank statements, converting PDFs to Excel for better tracking. 
+
+Current solutions are scarce, so I've developed a completely free Python program with a user-friendly graphical interface.
 
 To ensure safety, as the program reads and creates files locally, the source code is openly shared to address any concerns about malicious intent. You're welcome to review the code or use ChatGPT for a security check.
 
