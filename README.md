@@ -29,7 +29,8 @@ For queries, reach out at ongaunter@gmail.com.
 2. ***Select Export Path***: This is where you want to save the excel file on your computer. You can specify where you want to save it on your local computer. Or you could also save it in the same folder with the PDFs.
 3. ***Enter Excel Filename (without extentsion)***:  There's no need to specify whetehr its ".xlsx" or ".csv", it will automatically save the file as CSV.
 4.  ***Select Processing Mode***: The PDF structure of **Debit** and **Credit** statement are different, this is why there is a drop down option for you to select whether you wan to process Debit or Credit.
-   **REMINDER: DEBIT AND CREDIT BANK STATEMENTS MUST BE IN A DIFFERENT FOLDER**
+
+**REMINDER: DEBIT AND CREDIT BANK STATEMENTS MUST BE IN A DIFFERENT FOLDER**
 
 
 ## Finally, process the file by clicking on "Process Files and Export to Excel" 
