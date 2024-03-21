@@ -27,10 +27,10 @@ For queries, reach out at ongaunter@gmail.com.
 
 ![alt text](/image/program_look.png)
 
-1. ***Select Folder with PDFs***: After placing all of your Bank Statements into a single folder. Click **Browse** and navigate onto the folder where you stored all your bank statements
-2. ***Select Export Path***: This is where you want to save the excel file on your computer. You can specify where you want to save it on your local computer. Or you could also save it in the same folder with the PDFs.
-3. ***Enter Excel Filename (without extentsion)***:  There's no need to specify whetehr its ".xlsx" or ".csv", it will automatically save the file as CSV.
-4.  ***Select Processing Mode***: The PDF structure of **Debit** and **Credit** statement are different, this is why there is a drop down option for you to select whether you wan to process Debit or Credit.
+1. ***Select Folder with PDFs:*** Place all your bank statements in a single folder. Click "Browse" to locate and select this folder.
+2. ***Select Export Path:*** Choose where you want to save the exported Excel file. You can save it either on your local computer or in the same folder as the PDFs.
+3. ***Enter Excel Filename:*** Input the desired name for your Excel file without adding an extension like ".xlsx" or ".csv"; the file will automatically be saved as CSV.
+4. ***Select Processing Mode:*** Since the structure of debit and credit statements varies, use the dropdown menu to specify whether you want to process a debit or credit statement.
 
 **REMINDER: DEBIT AND CREDIT BANK STATEMENTS MUST BE IN A DIFFERENT FOLDER**
 
