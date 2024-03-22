@@ -44,6 +44,8 @@ For queries, reach out at ongaunter@gmail.com.
 
 The below is for Credit Card Bank Statment. As for Debit card, you will see additional columns like "Money in, Money Out" and "Statement Balance"
 
+I've cleaned up the data a little, you will see the location and more descriptive version.
+
 ![alt text](/image/output_cc_example.png)
 
 
