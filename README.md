@@ -10,6 +10,9 @@ To ensure safety, as the program reads and creates files locally, the source cod
 For queries, reach out at ongaunter@gmail.com.
 
 
+**It might trigger a Windows Defender alert; you can bypass this by selecting "more info" then "run anyway."**
+
+
 
 ## How the pdf processing program looks like
 
