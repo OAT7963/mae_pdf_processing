@@ -10,7 +10,11 @@ To ensure safety, as the program reads and creates files locally, the source cod
 For queries, reach out at ongaunter@gmail.com.
 
 
-**It might trigger a Windows Defender alert; you can bypass this by selecting "more info" then "run anyway."**
+****It might trigger a Windows Defender alert; you can bypass this by selecting "more info" then "run anyway."**
+
+
+****You will need to direct download your MAE Bank statements from MAE directly, Cannot use the PDF Downloaded from the email. I did not include anything to descrypt the PDF files"**
+
 
 
 
