@@ -1,5 +1,5 @@
 
-# MAE Maybank Credit and Debit Card Statement Processing
+# Maybank Credit/Debit Card and CIMB Debit Statement Processing
 
 I've created a program for the processing of Maybank bank statements for Credit and Debit PDF bank statements, converting PDFs to Excel for better tracking. 
 
