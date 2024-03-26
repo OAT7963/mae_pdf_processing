@@ -27,11 +27,14 @@ def create_directory_selection_row(root, label_text, browse_command, entry_width
 
 def selected_processing():
     mode = processing_mode.get()
-    if mode == "Debit Card Statement Processing":
+    if mode == "Maybank Debit Card Statement Processing":
         process_files()  # Assumes process_files is correctly implemented elsewhere
-    elif mode == "Credit Card Statement Processing":
+    elif mode == "Maybank Credit Card Statement Processing":
         # Directly call process_file_cc_statement without iterating here
         process_file_cc_statement()
+    elif mode == "CIMB Debit Statement Processing":
+        # Directly call process_file_cc_statement without iterating here
+        process_CIMB_DEBIT_data()
     else:
         messagebox.showerror("Error", "Invalid processing mode selected")
 
@@ -57,13 +60,12 @@ def remove_sections(lines, start_marker, end_marker):
 
 def determine_flow(transaction_amount):
     if transaction_amount.endswith('+'):
-        return 'money in'
+        return 'Deposit'
     elif transaction_amount.endswith('-'):
-        return 'money out'
+        return 'Withdrawal'
     else:
         return 'unknown'
 
-    
 
 def process_file_cc_statement():
     folder_path = source_path_entry.get()
@@ -232,6 +234,134 @@ def process_files():
     
     messagebox.showinfo("Success", f"Data exported successfully to {excel_path}")
 
+def remove_close_dates(data):
+    valid_dates_indices = []
+    i = 0
+    while i < len(data):
+        if re.match(r'\d{2}/\d{2}/\d{4}', data[i]):
+            valid_dates_indices.append(i)
+            i += 4
+        else:
+            i += 1
+    filtered_data = [data[i] for i in range(len(data)) if i in valid_dates_indices or not re.match(r'\d{2}/\d{2}/\d{4}', data[i])]
+    return filtered_data
+
+def is_pure_number(s):
+    # Remove spaces for the check
+    s = s.replace(' ', '')
+    # Check if the string is numeric and does not contain '.' or ','
+    return s.isnumeric() and not any(c in s for c in ".,")
+    
+
+
+def process_CIMB_DEBIT_data():
+    folder_path = source_path_entry.get()
+    export_path = export_path_entry.get()  # Use the selected export path
+    excel_file_name = excel_name_entry.get()
+    if not folder_path or not excel_file_name or not export_path:
+        messagebox.showerror("Error", "Folder path, export path, or Excel file name is missing")
+        return
+    
+    pdf_files = [file for file in os.listdir(folder_path) if file.endswith('.pdf')]
+    all_data = []
+
+    for pdf_file in pdf_files:
+        pdf_path = os.path.join(folder_path, pdf_file)
+        doc = fitz.open(pdf_path)
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+
+        lines = text.split('\n')
+        lines = remove_sections(lines, 'Page / Halaman', 'ISLAMIC BBB-PPPP')
+
+        # Then, apply the existing filtering logic
+        filtered_lines = [line for line in lines if not any(s in line for s in strings_to_remove)]
+        # print(filtered_lines)
+
+        data = remove_close_dates(filtered_lines)
+        data = [item for item in data if not is_pure_number(item)]
+        data = [item if item != "99 SPEEDMART-2133" else "ninetynine speed mart" for item in data]
+
+
+        # print(data)
+        final_structured_data = []
+
+        i = 0
+        while i < len(data):
+            transaction = {}
+            if data[i] == 'OPENING BALANCE':
+                transaction['Date'] = '-'
+                transaction['Transaction Type/Description'] = 'Opening Balance'
+                i += 1
+                transaction['Balance After Transaction'] = '-'
+                transaction['Amount'] = data[i].strip()
+                transaction['Beneficiary/Payee Name'] = '-'
+                final_structured_data.append(transaction)
+                i += 1
+            elif re.match(r'\d{2}/\d{2}/\d{4}', data[i]):
+                transaction['Date'] = data[i]
+                i += 1
+
+                description_lines = []
+                while i < len(data) and not re.match(r'\d{2}/\d{2}/\d{4}', data[i]) and not re.match(r'^-?\d', data[i].strip()):
+                    if data[i].strip():
+                        description_lines.append(data[i].strip())
+                    i += 1
+            
+                transaction['Transaction Type/Description'] = ', '.join(description_lines)
+
+                if i < len(data) and re.match(r'^-?\d', data[i].strip()):
+                    transaction['Amount'] = data[i].strip()
+                    i += 1
+
+                balance_line = data[i].strip() if i < len(data) else ""
+                while not balance_line and i < len(data):
+                    i += 1
+                    balance_line = data[i].strip() if i < len(data) else ""
+                transaction['Balance After Transaction'] = balance_line
+
+                transaction['Beneficiary/Payee Name'] = '-'
+                if description_lines:
+                    transaction['Beneficiary/Payee Name'] = description_lines[0]
+
+                final_structured_data.append(transaction)
+            else:
+                i += 1
+
+        if final_structured_data:
+        
+            final_df = pd.DataFrame(final_structured_data)
+            df = final_df
+            df['Transaction Description2'] = df['Transaction Type/Description'].apply(lambda x: ' '.join(x.split()[1:]))
+            df['Transaction Description'] = df['Transaction Description2'] + ', ' + df['Beneficiary/Payee Name']
+            df.drop(columns=['Transaction Type/Description', 'Beneficiary/Payee Name'], inplace=True)
+            for i in range(1, len(df)):
+                if df.loc[i, 'Balance After Transaction'] > df.loc[i-1, 'Balance After Transaction']:
+                    df.loc[i, 'output'] = 'deposit'
+                else:
+                    df.loc[i, 'output'] = 'withdrawal'
+            all_data.append(df)
+
+    if all_data:
+        combined_df = pd.concat(all_data, ignore_index=True)
+        combined_df['Transaction Description2'] = combined_df['Transaction Description2'].replace('Balance', 'Opening Balance')
+        combined_df['Transaction Description'] = combined_df['Transaction Description2'].replace('Balance, -', 'Opening Balance')
+        combined_df[['Date', 'Transaction Type']] = combined_df['Date'].str.extract(r'(\S+)\s(.*)')
+        combined_df = combined_df[['Date', 'Transaction Type', 'Transaction Description', 'Transaction Description2','Amount', 'Balance After Transaction','output']]
+
+
+
+        excel_path = os.path.join(export_path, f"{excel_file_name}.csv")  # Use export_path
+        combined_df.to_csv(excel_path, index=False)
+        print(f"Data exported to {excel_path}")
+
+        messagebox.showinfo("Success", f"Data exported successfully to {excel_path}")
+    else:
+        print("No Data to Export.")
+
+
 
 root = tk.Tk()
 root.title("MAE PDF File Processor")
@@ -248,14 +378,14 @@ style.configure("TEntry", font=('Arial', 10))
 
 # Create a StringVar to hold the selection
 processing_mode = tk.StringVar()
-processing_mode.set("Debit Card Statement Processing")  # default value
+processing_mode.set("Maybank Debit Card Statement Processing")  # default value
 
 # Create the dropdown menu
 processing_mode_label = ttk.Label(root, text="Select Processing Mode:", background='white')
 processing_mode_label.grid(row=3, column=0, sticky=tk.W, padx=(10, 5), pady=(5, 5))
 
 processing_mode_dropdown = ttk.Combobox(root, textvariable=processing_mode)
-processing_mode_dropdown['values'] = ("Debit Card Statement Processing", "Credit Card Statement Processing")
+processing_mode_dropdown['values'] = ("Maybank Debit Card Statement Processing", "Maybank Credit Card Statement Processing", "CIMB Debit Statement Processing")
 processing_mode_dropdown.grid(row=3, column=1, sticky=tk.EW, padx=(0, 10), pady=(5, 5))
 
 
