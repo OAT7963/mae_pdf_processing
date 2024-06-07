@@ -6,8 +6,10 @@ import pandas as pd
 import re
 import os
 
-
-strings_to_remove = ["URUSNIAGA AKAUN/ 戶口進支項 /ACCOUNT TRANSACTIONS", "TARIKH MASUK", "BUTIR URUSNIAGA", "JUMLAH URUSNIAGA", "BAKI PENYATA", "進支日期", "進支項說明", "银碼", "結單存餘"]
+#SAC added 3 additional strings at end for M2U current account statement
+#strings_to_remove = ["URUSNIAGA AKAUN/ 戶口進支項 /ACCOUNT TRANSACTIONS", "TARIKH MASUK", "BUTIR URUSNIAGA", "JUMLAH URUSNIAGA", "BAKI PENYATA", "進支日期", "進支項說明", "银碼", "結單存餘" ]
+strings_to_remove = ["URUSNIAGA AKAUN/ 戶口進支項 /ACCOUNT TRANSACTIONS", "TARIKH MASUK", "BUTIR URUSNIAGA", "JUMLAH URUSNIAGA", "BAKI PENYATA", "進支日期", "進支項說明", "银碼", "結單存餘" ,
+                     "URUSNIAGA AKAUN/ 戶口進支項/ACCOUNT TRANSACTIONS", 'TARIKH NILAI', '仄過賬日期'] 
 
 # Improved directory selection row creation
 def create_directory_selection_row(root, label_text, browse_command, entry_width=30, row=0):
@@ -35,6 +37,9 @@ def selected_processing():
     elif mode == "CIMB Debit Statement Processing":
         # Directly call process_file_cc_statement without iterating here
         process_CIMB_DEBIT_data()
+    #SAC add M2U current account processing
+    elif mode == "M2U Current Account Statement":
+        process_files_m2u()
     else:
         messagebox.showerror("Error", "Invalid processing mode selected")
 
@@ -92,12 +97,33 @@ def process_file_cc_statement():
             print(f"Error opening {pdf_path}: {e}")
             continue  # Skip to the next file
 
-        # Extract the year from the file name
-        year_match = re.search(r'_(\d{4})\d{4}', pdf_file)
-        if year_match:
-            year = year_match.group(1)
-        else:
-            year = "Unknown"
+        # SAC
+        # Extract the year from the filename. Filenames have differnet formats depending on source
+        # MAE provides the following 'M2U Bill 1553 May 2024.pdf'
+        # Maybank2U provides "1234567890123_20240521.pdf"
+
+        # 4 digit pattern
+        pattern = re.compile(r"\d{4}")
+        #create list of 4 digits patterns in filename
+        yearlist = pattern.findall(pdf_file)
+        #default numerical years value
+        years = "0000"
+
+        for years in yearlist:
+            #assume this software will not live forever
+            if ((int(years) > 2010) and (int(years) < 2050)) :
+                year = years
+                #last number that matches probably best one.
+                #break
+
+        #commented out.
+        #year_match = re.search(r'_(\d{4})\d{4}', pdf_file)
+        #if year_match:
+        #    year = year_match.group(1)
+        #else:
+        #    #sac if unknown then failure later when conver string to numerical value
+        #    #year = "Unknown"
+        #    year = "2000"
 
         lines = text.split('\n')
         filtered_lines = [line for line in lines if not any(s in line for s in strings_to_remove)]
@@ -152,7 +178,119 @@ def process_file_cc_statement():
     else:
         print("No data to export.")
 
+#SAC Added method for M2U current accound processing.
+def process_files_m2u():
+    folder_path = source_path_entry.get()
+    export_path = export_path_entry.get()  # Use the selected export path
+    excel_file_name = excel_name_entry.get()
+    if not folder_path or not excel_file_name or not export_path:
+        messagebox.showerror("Error", "Folder path, export path, or Excel file name is missing")
+        return
     
+    pdf_files = [file for file in os.listdir(folder_path) if file.endswith('.pdf')]
+    all_data = []
+
+    for pdf_file in pdf_files:
+        pdf_path = os.path.join(folder_path, pdf_file)
+        doc = fitz.open(pdf_path)
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+
+        lines = text.split('\n')
+
+        #SAC before tidying content search for date in header
+        #search for a date string of format.  dd/mm/yy so we can extract the year.
+        date_pattern = re.compile(r'\d{2}/\d{2}/\d{2}')
+        year_statement = "00"
+        for line in lines:
+            if date_pattern.match(line):
+                #strip year
+                year_match = re.match(r'(\d{2})/(\d{2})/(\d{2})', line)
+                if year_match:
+                    year_statement = year_match.group(3)
+                        
+                #exit for loop.
+                break
+        
+        #SAC Removed for Adjusted for M2U        
+        #lines = remove_sections(lines, 'Maybank Islamic Berhad', 'Please notify us of any change of address in writing.')
+        #lines = remove_sections(lines, '15th Floor, Tower A, Dataran Maybank, 1, Jalan Maarof, 59000 Kuala Lumpur', '請通知本行在何地址更换。')
+        #lines = remove_sections(lines, 'ENTRY DATE', 'STATEMENT BALANCE')
+        #lines = remove_sections(lines, 'ENDING BALANCE :', 'TOTAL DEBIT :')
+
+        #SAC Adjusted for M2U
+        lines = remove_sections(lines, 'Malayan Banking Berhad (3813-K)', 'denoted by DR')
+        lines = remove_sections(lines, 'FCN', 'PLEASE BE INFORMED TO CHECK YOUR BANK ACCOUNT BALANCES REGULARLY')
+        lines = remove_sections(lines, 'ENTRY DATE', 'STATEMENT BALANCE')
+        lines = remove_sections(lines, 'ENDING BALANCE :', 'TOTAL CREDIT :')
+
+        filtered_lines = [line for line in lines if not any(s in line for s in strings_to_remove)]
+        transactions = filtered_lines
+        structured_data = []
+        temp_entry = {}
+
+        #SAC date_pattern in Entry date is 01/05  format.
+        #date_pattern = re.compile(r'\d{2}/\d{2}/\d{2}')
+        date_pattern = re.compile(r'\d{2}/\d{2}')
+
+        for line in transactions:
+            if date_pattern.match(line):
+                if temp_entry:
+                    structured_data.append(temp_entry)
+                temp_entry = {"Entry Date": line, "Transaction Description": "", "Transaction Amount": "", "Statement Balance": ""}
+            elif "Transaction Amount" in temp_entry and temp_entry["Transaction Amount"] and "Statement Balance" in temp_entry and temp_entry["Statement Balance"] == "":
+                temp_entry["Statement Balance"] = line.strip()
+            elif "Transaction Amount" in temp_entry and temp_entry["Transaction Amount"] == "":
+                temp_entry["Transaction Amount"] = line.strip()
+            else:
+                if temp_entry:
+                    temp_entry["Transaction Description"] += line.strip() + ", "
+
+        if temp_entry:
+            structured_data.append(temp_entry)
+
+        for entry in structured_data:
+            entry["Transaction Description"] = entry["Transaction Description"].rstrip(', ')
+
+        df = pd.DataFrame(structured_data)
+        # df['Entry Date'] = pd.to_datetime(df['Entry Date'], format='%d/%m/%y', dayfirst=True).dt.strftime('%d-%m-%y')
+
+        #SAC date_pattern in Entry date is 01/05  format.
+        #df['Entry Date'] = pd.to_datetime(df['Entry Date'], format='%d/%m/%y', dayfirst=True).dt.date 
+        df['Entry Date'] = pd.to_datetime(df['Entry Date'], format='%d/%m', dayfirst=True).dt.date 
+        #write year recovered earlier and add 2K
+        df['Entry Date'] = df['Entry Date'].apply(lambda x: x.replace(year = 2000 + int(year_statement)))
+ 
+        df['Statement Balance 2'] = df['Transaction Description'].str.extract(r'(\d+,\d+\.\d+)')[0]
+        df['Statement Balance 2'] = df['Statement Balance 2'].str.replace(',', '').astype(float)
+
+        df['Transaction Description'] = df['Transaction Description'].str.replace(r'\d+,\d+\.\d+, ', '', regex=True)
+        df['Transaction Description'] = df['Transaction Description'].str.replace(r', (\d{1,3}(?:,\d{3})*(?:\.\d{2}))$', '', regex=True)
+
+        df = df[['Entry Date', 'Transaction Amount', 'Transaction Description', 'Statement Balance', 'Statement Balance 2']]
+        df = df.rename(columns={'Transaction Amount': 'Transaction Type', 'Statement Balance': 'Transaction Amount', 'Statement Balance 2': 'Statement_Balance'})
+        df.loc[df['Transaction Type'] == 'CASH WITHDRAWAL', 'Transaction Description'] = 'CASH WITHDRAWAL'
+        df.loc[df['Transaction Type'] == 'DEBIT ADVICE', 'Transaction Description'] = 'Card Annual Fee'
+        df.loc[df['Transaction Type'] == 'PROFIT PAID', 'Transaction Description'] = 'PROFIT PAID'
+
+        #SAC additional transation types
+        df.loc[df['Transaction Type'] == 'INTEREST PAYMENT', 'Transaction Description'] = 'INTEREST PAYMENT'
+        df.loc[df['Transaction Type'] == 'INT ON INT PAYMENT', 'Transaction Description'] = 'INT ON INT PAYMENT'
+
+        df['flow'] = df['Transaction Amount'].apply(determine_flow)
+        df['Transaction Amount'] = df['Transaction Amount'].str.replace('+', '', regex=False).str.replace('-', '', regex=False)
+        df['Transaction Amount'] = df['Transaction Amount'].str.replace(',', '').astype(float)
+        
+        all_data.append(df)
+
+    combined_df = pd.concat(all_data, ignore_index=True)
+    excel_path = os.path.join(export_path, f"{excel_file_name}.csv")  # Use export_path
+    combined_df.to_csv(excel_path, index=False)
+    print(f"Data exported to {excel_path}")
+    
+    messagebox.showinfo("Success", f"Data exported successfully to {excel_path}")
 
 def process_files():
     folder_path = source_path_entry.get()
@@ -385,7 +523,7 @@ processing_mode_label = ttk.Label(root, text="Select Processing Mode:", backgrou
 processing_mode_label.grid(row=3, column=0, sticky=tk.W, padx=(10, 5), pady=(5, 5))
 
 processing_mode_dropdown = ttk.Combobox(root, textvariable=processing_mode)
-processing_mode_dropdown['values'] = ("Maybank Debit Card Statement Processing", "Maybank Credit Card Statement Processing", "CIMB Debit Statement Processing")
+processing_mode_dropdown['values'] = ("Maybank Debit Card Statement Processing", "Maybank Credit Card Statement Processing", "CIMB Debit Statement Processing", "M2U Current Account Statement")
 processing_mode_dropdown.grid(row=3, column=1, sticky=tk.EW, padx=(0, 10), pady=(5, 5))
 
 
