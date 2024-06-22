@@ -51,7 +51,7 @@ def remove_sections(lines, start_marker, end_marker):
         if start_marker in line:
             in_section = True
             continue  # Skip adding this line
-        elif end_marker in line:
+        if end_marker and end_marker in line:
             in_section = False
             continue  # Skip adding this line and move past the end marker
         if not in_section:
@@ -265,6 +265,8 @@ def process_files_mae():
         lines = remove_sections(lines, 'ENTRY DATE', 'STATEMENT BALANCE')
         lines = remove_sections(lines, 'ENDING BALANCE :', 'TOTAL DEBIT :')
         lines = remove_sections(lines, 'TARIKH PENYATA', 'TARIKH NILAI')
+        lines = remove_sections(lines, 'TOTAL CREDIT :', end_marker=None)
+
     
     
     
