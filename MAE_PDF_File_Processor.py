@@ -234,6 +234,96 @@ def process_files():
     
     messagebox.showinfo("Success", f"Data exported successfully to {excel_path}")
 
+def process_files_mae():
+    folder_path = source_path_entry.get()
+    export_path = export_path_entry.get()  # Use the selected export path
+    excel_file_name = excel_name_entry.get()
+    if not folder_path or not excel_file_name or not export_path:
+        print.showerror("Error", "Folder path, export path, or Excel file name is missing")
+
+    pdf_files = [file for file in os.listdir(folder_path) if file.endswith('.pdf')]
+    all_data = []
+    
+    for pdf_file in pdf_files:
+        year_match = re.search(r'_(\d{4})\d{4}', pdf_file)
+        if year_match:
+            year = int(year_match.group(1))
+        else:
+            year = "Unknown"
+        
+        
+        pdf_path = os.path.join(folder_path, pdf_file)
+        doc = fitz.open(pdf_path)
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        doc.close()
+    
+        lines = text.split('\n')
+        lines = remove_sections(lines, 'Maybank Islamic Berhad', 'Please notify us of any change of address in writing.')
+        lines = remove_sections(lines, '15th Floor, Tower A, Dataran Maybank, 1, Jalan Maarof, 59000 Kuala Lumpur', '請通知本行在何地址更换。')
+        lines = remove_sections(lines, 'ENTRY DATE', 'STATEMENT BALANCE')
+        lines = remove_sections(lines, 'ENDING BALANCE :', 'TOTAL DEBIT :')
+        lines = remove_sections(lines, 'TARIKH PENYATA', 'TARIKH NILAI')
+    
+    
+    
+    
+        filtered_lines = [line for line in lines if not any(s in line for s in strings_to_remove)]
+        transactions = filtered_lines
+        structured_data = []
+        temp_entry = {}
+        date_pattern = re.compile(r'\d{2}/\d{2}')
+    
+        for line in transactions:
+            print(line)
+            if date_pattern.match(line):
+                if temp_entry:
+                    structured_data.append(temp_entry)
+                temp_entry = {"Entry Date": line, "Transaction Description": "", "Transaction Amount": "", "Statement Balance": ""}
+            elif "Transaction Amount" in temp_entry and temp_entry["Transaction Amount"] and "Statement Balance" in temp_entry and temp_entry["Statement Balance"] == "":
+                temp_entry["Statement Balance"] = line.strip()
+            elif "Transaction Amount" in temp_entry and temp_entry["Transaction Amount"] == "":
+                temp_entry["Transaction Amount"] = line.strip()
+            else:
+                if temp_entry:
+                    temp_entry["Transaction Description"] += line.strip() + ", "
+    
+        if temp_entry:
+            structured_data.append(temp_entry)
+    
+        for entry in structured_data:
+            entry["Transaction Description"] = entry["Transaction Description"].rstrip(', ')
+    
+        df = pd.DataFrame(structured_data)
+        # df['Entry Date'] = pd.to_datetime(df['Entry Date'], format='%d/%m/%y', dayfirst=True).dt.strftime('%d-%m-%y')
+        df['Entry Date'] = pd.to_datetime(df['Entry Date'], format='%d/%m', dayfirst=True).dt.date 
+        df['Statement Balance 2'] = df['Transaction Description'].str.extract(r'(\d+,\d+\.\d+)')[0]
+        df['Statement Balance 2'] = df['Statement Balance 2'].str.replace(',', '').astype(float)
+    
+        df['Transaction Description'] = df['Transaction Description'].str.replace(r'\d+,\d+\.\d+, ', '', regex=True)
+        df['Transaction Description'] = df['Transaction Description'].str.replace(r', (\d{1,3}(?:,\d{3})*(?:\.\d{2}))$', '', regex=True)
+    
+        df = df[['Entry Date', 'Transaction Amount', 'Transaction Description', 'Statement Balance', 'Statement Balance 2']]
+        df = df.rename(columns={'Transaction Amount': 'Transaction Type', 'Statement Balance': 'Transaction Amount', 'Statement Balance 2': 'Statement_Balance'})
+        df.loc[df['Transaction Type'] == 'CASH WITHDRAWAL', 'Transaction Description'] = 'CASH WITHDRAWAL'
+        df.loc[df['Transaction Type'] == 'DEBIT ADVICE', 'Transaction Description'] = 'Card Annual Fee'
+        df.loc[df['Transaction Type'] == 'PROFIT PAID', 'Transaction Description'] = 'PROFIT PAID'
+        df['flow'] = df['Transaction Amount'].apply(determine_flow)
+        df['Transaction Amount'] = df['Transaction Amount'].str.replace('+', '', regex=False).str.replace('-', '', regex=False)
+        df['Transaction Amount'] = df['Transaction Amount'].str.replace(',', '').astype(float)
+        df['Entry Date'] = df['Entry Date'].apply(lambda x: x.replace(year=year))
+    
+        all_data.append(df)
+    
+    combined_df = pd.concat(all_data, ignore_index=True)
+    excel_path = os.path.join(export_path, f"{excel_file_name}.csv")  # Use export_path
+    combined_df.to_csv(excel_path, index=False)
+    print(f"Data exported to {excel_path}")
+    
+    messagebox.showinfo("Success", f"Data exported successfully to {excel_path}")
+
+
 def remove_close_dates(data):
     valid_dates_indices = []
     i = 0
