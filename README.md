@@ -1,4 +1,9 @@
+# Available for Processing
+1. Maybank Debit (Savings and Current)
+2. Maybank Credit (Normal and Premier)
+3. CIMB Savings
 
+   
 # Maybank Credit/Debit Card and CIMB Debit Statement Processing
 
 I've created a program for the processing of Maybank bank statements for Credit and Debit PDF bank statements, converting PDFs to Excel for better tracking. 
