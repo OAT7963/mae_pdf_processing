@@ -98,10 +98,8 @@ def process_m2u_statement(pdf_path, debug=False):
     date_pattern = re.compile(r'\d{2}/\d{2}/\d{2}')
     
     # First try: Look for date after "STATEMENT DATE"
-    statement_date_found = False
     for i, line in enumerate(lines):
         if "STATEMENT DATE" in line:
-            statement_date_found = True
             # Check next few lines for the date
             for j in range(i, min(i + 5, len(lines))):
                 if date_pattern.search(lines[j]):
@@ -111,9 +109,9 @@ def process_m2u_statement(pdf_path, debug=False):
                         print(f"Found statement year (method 1): {year_statement}")
                     break
             break
-    
-    # Second try: Look for any date pattern if first method failed
+
     if not year_statement:
+        # Second try: Look for any date pattern
         for line in lines:
             match = date_pattern.search(line)
             if match:
@@ -123,14 +121,14 @@ def process_m2u_statement(pdf_path, debug=False):
                     print(f"Found statement year (method 2): {year_statement}")
                 break
     
-    # Third try: Extract from filename
-    if not year_statement:
-        filename_pattern = re.compile(r'(\d{4})(?=\d{2})')
-        match = filename_pattern.search(pdf_path)
-        if match:
-            year_statement = match.group(1)[2:]  # Get last 2 digits of year
-            if debug:
-                print(f"Found statement year from filename: {year_statement}")
+        # Third try: Extract from filename
+        if not year_statement:
+            filename_pattern = re.compile(r'(\d{4})(?=\d{2})')
+            match = filename_pattern.search(pdf_path)
+            if match:
+                year_statement = match.group(1)[2:]  # Get last 2 digits of year
+                if debug:
+                    print(f"Found statement year from filename: {year_statement}")
 
     if not year_statement:
         raise ValueError("Could not find statement year")
@@ -150,17 +148,10 @@ def process_m2u_statement(pdf_path, debug=False):
         return result
 
     # Remove unnecessary sections
-    original_length = len(lines)
     lines = remove_sections(lines, 'Malayan Banking Berhad (3813-K)', 'denoted by DR')
-    if debug:
-        print(f"After removing header section: {len(lines)} lines")
-    
     lines = remove_sections(lines, 'FCN', 'PLEASE BE INFORMED TO CHECK YOUR BANK ACCOUNT BALANCES REGULARLY')
     lines = remove_sections(lines, 'ENTRY DATE', 'STATEMENT BALANCE')
     lines = remove_sections(lines, 'ENDING BALANCE :', 'TOTAL CREDIT :')
-    
-    if debug:
-        print(f"After removing all sections: {len(lines)} lines")
 
     # Filter unwanted strings
     strings_to_remove = [
@@ -176,7 +167,8 @@ def process_m2u_statement(pdf_path, debug=False):
         '仄過賬日期',
         '進支項說明',
         '银碼',
-        '結單存餘'
+        '結單存餘',
+        'BEGINNING BALANCE'
     ]
 
     # Filter lines
@@ -184,50 +176,58 @@ def process_m2u_statement(pdf_path, debug=False):
     for line in lines:
         if not any(s in line for s in strings_to_remove):
             filtered_lines.append(line)
-    
-    if debug:
-        print(f"After filtering: {len(filtered_lines)} lines")
-        print("Sample of filtered lines:", filtered_lines[:5])
 
     # Process transactions
     date_pattern = re.compile(r'\d{2}/\d{2}')
+    amount_pattern = re.compile(r'(\d{1,3}(?:,\d{3})*(?:\.\d{2})?(?:[+-])?|\d+(?:\.\d{2})?(?:[+-])?)')
     structured_data = []
-    temp_entry = {}
+    current_entry = None
+    description_lines = []
 
     for line in filtered_lines:
+        line = line.strip()
+        
+        # Start new entry if we find a date
         if date_pattern.match(line):
-            if temp_entry:
-                structured_data.append(temp_entry)
-            temp_entry = {
+            # Save previous entry if it exists
+            if current_entry and description_lines:
+                current_entry["Transaction Description"] = " ".join(description_lines).strip()
+                structured_data.append(current_entry)
+            
+            # Initialize new entry
+            current_entry = {
                 "Entry Date": line,
                 "Transaction Description": "",
-                "Transaction Amount": "",
-                "Statement Balance": ""
+                "Transaction Amount": None,
+                "Statement Balance": None
             }
-        elif temp_entry and "Transaction Amount" in temp_entry:
-            if temp_entry["Transaction Amount"] and temp_entry["Statement Balance"] == "":
-                try:
-                    # Remove any non-numeric characters except . and ,
-                    clean_num = re.sub(r'[^\d.,]', '', line.strip())
-                    float(clean_num.replace(',', ''))
-                    temp_entry["Statement Balance"] = line.strip()
-                except ValueError:
-                    temp_entry["Transaction Description"] += line.strip() + " "
-            elif temp_entry["Transaction Amount"] == "":
-                if re.search(r'[-+]?\d', line):
-                    temp_entry["Transaction Amount"] = line.strip()
-                else:
-                    temp_entry["Transaction Description"] += line.strip() + " "
-        elif temp_entry:
-            temp_entry["Transaction Description"] += line.strip() + " "
+            description_lines = []
+            continue
 
-    if temp_entry:
-        structured_data.append(temp_entry)
+        if not current_entry:
+            continue
 
-    if debug:
-        print(f"Number of transactions extracted: {len(structured_data)}")
-        if structured_data:
-            print("Sample transaction:", structured_data[0])
+        # Try to identify amounts
+        amounts = amount_pattern.findall(line)
+        is_amount = bool(amounts and any(amt.replace(',', '').replace('.', '').replace('+', '').replace('-', '').isdigit() for amt in amounts))
+        
+        if is_amount:
+            amount_str = amounts[0]
+            if '+' in line or '-' in line:
+                if not current_entry["Transaction Amount"]:
+                    current_entry["Transaction Amount"] = amount_str
+                    continue
+            elif current_entry["Transaction Amount"] and not current_entry["Statement Balance"]:
+                current_entry["Statement Balance"] = amount_str
+                continue
+        
+        # If not an amount or not used as amount, add to description
+        description_lines.append(line)
+
+    # Don't forget the last entry
+    if current_entry and description_lines:
+        current_entry["Transaction Description"] = " ".join(description_lines).strip()
+        structured_data.append(current_entry)
 
     # Convert to DataFrame
     df = pd.DataFrame(structured_data)
@@ -235,41 +235,34 @@ def process_m2u_statement(pdf_path, debug=False):
     if df.empty:
         raise ValueError("No transactions were extracted from the PDF")
 
-    # Process dates and add year
+    # Process dates
     df['Entry Date'] = pd.to_datetime(df['Entry Date'] + '/' + year_statement, format='%d/%m/%y', dayfirst=True)
 
-    # Clean up amounts and balances
+    # Clean amounts and determine flow
     def clean_amount(val):
-        if isinstance(val, str):
-            val = val.strip()
-            if '+' in val or '-' in val:
-                return val
-            try:
-                float(val.replace(',', ''))
-                return val
-            except:
-                return None
-        return val
+        if pd.isna(val) or val is None or val == '':
+            return None
+        # Remove everything except digits, decimal point, and signs
+        clean_val = re.sub(r'[^\d.,+-]', '', str(val))
+        if not clean_val:
+            return None
+        return clean_val
 
     df['Transaction Amount'] = df['Transaction Amount'].apply(clean_amount)
     df['Statement Balance'] = df['Statement Balance'].apply(clean_amount)
-
-    # Clean description
-    df['Transaction Description'] = df['Transaction Description'].str.strip()
-
-    # Add flow column
-    def determine_flow(amount):
-        if isinstance(amount, str):
-            return 'deposit' if '+' in amount else 'withdrawal'
-        return None
-
-    df['flow'] = df['Transaction Amount'].apply(determine_flow)
     
-    # Final cleanup
-    df['Transaction Amount'] = df['Transaction Amount'].str.replace('+', '', regex=False).str.replace('-', '', regex=False)
-    df['Transaction Amount'] = df['Transaction Amount'].str.replace(',', '').astype(float)
+    # Add flow column
+    df['flow'] = df['Transaction Amount'].apply(lambda x: 'inflow' if x and '+' in str(x) else 'outflow' if x else None)
+    
+    # Final cleanup of amounts
+    df['Transaction Amount'] = df['Transaction Amount'].apply(lambda x: float(re.sub(r'[^\d.]', '', str(x))) if x else None)
+    df['Statement Balance'] = df['Statement Balance'].apply(lambda x: float(re.sub(r'[^\d.]', '', str(x))) if x else None)
+    
+    # Drop rows where Transaction Amount is None
+    df = df.dropna(subset=['Transaction Amount'])
 
     return df
+
 
 def process_files_m2u_debit():
     folder_path = source_path_entry.get()
