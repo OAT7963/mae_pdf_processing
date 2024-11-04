@@ -260,7 +260,7 @@ def process_m2u_statement(pdf_path, debug=False):
     # Add flow column
     def determine_flow(amount):
         if isinstance(amount, str):
-            return 'inflow' if '+' in amount else 'outflow'
+            return 'deposit' if '+' in amount else 'withdrawal'
         return None
 
     df['flow'] = df['Transaction Amount'].apply(determine_flow)
