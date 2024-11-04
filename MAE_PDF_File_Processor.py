@@ -79,7 +79,7 @@ def determine_flow(transaction_amount):
     else:
         return 'unknown'
 
-def process_m2u_statement(pdf_path):
+def process_m2u_statement(pdf_path, debug=False):
     # Read PDF
     doc = fitz.open(pdf_path)
     text = ""
@@ -87,28 +87,108 @@ def process_m2u_statement(pdf_path):
         text += page.get_text()
     doc.close()
 
-    # Split into lines
-    lines = text.split('\n')
+    # Split into lines and remove empty lines
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    
+    if debug:
+        print(f"Total lines before processing: {len(lines)}")
 
-    # Extract year from statement date
+    # Enhanced year extraction
+    year_statement = None
     date_pattern = re.compile(r'\d{2}/\d{2}/\d{2}')
-    year_statement = "00"
-    for line in lines:
-        if date_pattern.match(line):
-            year_match = re.match(r'(\d{2})/(\d{2})/(\d{2})', line)
-            if year_match:
-                year_statement = year_match.group(3)
+    
+    # First try: Look for date after "STATEMENT DATE"
+    statement_date_found = False
+    for i, line in enumerate(lines):
+        if "STATEMENT DATE" in line:
+            statement_date_found = True
+            # Check next few lines for the date
+            for j in range(i, min(i + 5, len(lines))):
+                if date_pattern.search(lines[j]):
+                    full_date = date_pattern.search(lines[j]).group(0)
+                    year_statement = full_date.split('/')[-1]
+                    if debug:
+                        print(f"Found statement year (method 1): {year_statement}")
+                    break
             break
+    
+    # Second try: Look for any date pattern if first method failed
+    if not year_statement:
+        for line in lines:
+            match = date_pattern.search(line)
+            if match:
+                full_date = match.group(0)
+                year_statement = full_date.split('/')[-1]
+                if debug:
+                    print(f"Found statement year (method 2): {year_statement}")
+                break
+    
+    # Third try: Extract from filename
+    if not year_statement:
+        filename_pattern = re.compile(r'(\d{4})(?=\d{2})')
+        match = filename_pattern.search(pdf_path)
+        if match:
+            year_statement = match.group(1)[2:]  # Get last 2 digits of year
+            if debug:
+                print(f"Found statement year from filename: {year_statement}")
+
+    if not year_statement:
+        raise ValueError("Could not find statement year")
+
+    def remove_sections(lines, start_marker, end_marker):
+        result = []
+        skip = False
+        for line in lines:
+            if start_marker in line:
+                skip = True
+                continue
+            if end_marker in line:
+                skip = False
+                continue
+            if not skip:
+                result.append(line)
+        return result
 
     # Remove unnecessary sections
+    original_length = len(lines)
     lines = remove_sections(lines, 'Malayan Banking Berhad (3813-K)', 'denoted by DR')
+    if debug:
+        print(f"After removing header section: {len(lines)} lines")
+    
     lines = remove_sections(lines, 'FCN', 'PLEASE BE INFORMED TO CHECK YOUR BANK ACCOUNT BALANCES REGULARLY')
     lines = remove_sections(lines, 'ENTRY DATE', 'STATEMENT BALANCE')
     lines = remove_sections(lines, 'ENDING BALANCE :', 'TOTAL CREDIT :')
+    
+    if debug:
+        print(f"After removing all sections: {len(lines)} lines")
+
+    # Filter unwanted strings
+    strings_to_remove = [
+        'URUSNIAGA AKAUN/',
+        '戶口進支項',
+        '/ACCOUNT TRANSACTIONS',
+        'TARIKH MASUK',
+        'TARIKH NILAI',
+        'BUTIR URUSNIAGA',
+        'JUMLAH URUSNIAGA',
+        'BAKI PENYATA',
+        '進支日期',
+        '仄過賬日期',
+        '進支項說明',
+        '银碼',
+        '結單存餘'
+    ]
 
     # Filter lines
-    filtered_lines = [line for line in lines if not any(s in line for s in strings_to_remove)]
+    filtered_lines = []
+    for line in lines:
+        if not any(s in line for s in strings_to_remove):
+            filtered_lines.append(line)
     
+    if debug:
+        print(f"After filtering: {len(filtered_lines)} lines")
+        print("Sample of filtered lines:", filtered_lines[:5])
+
     # Process transactions
     date_pattern = re.compile(r'\d{2}/\d{2}')
     structured_data = []
@@ -124,54 +204,68 @@ def process_m2u_statement(pdf_path):
                 "Transaction Amount": "",
                 "Statement Balance": ""
             }
-        elif "Transaction Amount" in temp_entry and temp_entry["Transaction Amount"] and "Statement Balance" in temp_entry and temp_entry["Statement Balance"] == "":
-            temp_entry["Statement Balance"] = line.strip()
-        elif "Transaction Amount" in temp_entry and temp_entry["Transaction Amount"] == "":
-            temp_entry["Transaction Amount"] = line.strip()
-        else:
-            if temp_entry:
-                temp_entry["Transaction Description"] += line.strip() + ", "
+        elif temp_entry and "Transaction Amount" in temp_entry:
+            if temp_entry["Transaction Amount"] and temp_entry["Statement Balance"] == "":
+                try:
+                    # Remove any non-numeric characters except . and ,
+                    clean_num = re.sub(r'[^\d.,]', '', line.strip())
+                    float(clean_num.replace(',', ''))
+                    temp_entry["Statement Balance"] = line.strip()
+                except ValueError:
+                    temp_entry["Transaction Description"] += line.strip() + " "
+            elif temp_entry["Transaction Amount"] == "":
+                if re.search(r'[-+]?\d', line):
+                    temp_entry["Transaction Amount"] = line.strip()
+                else:
+                    temp_entry["Transaction Description"] += line.strip() + " "
+        elif temp_entry:
+            temp_entry["Transaction Description"] += line.strip() + " "
 
     if temp_entry:
         structured_data.append(temp_entry)
 
+    if debug:
+        print(f"Number of transactions extracted: {len(structured_data)}")
+        if structured_data:
+            print("Sample transaction:", structured_data[0])
+
     # Convert to DataFrame
     df = pd.DataFrame(structured_data)
+    
+    if df.empty:
+        raise ValueError("No transactions were extracted from the PDF")
 
     # Process dates and add year
-    df['Entry Date'] = pd.to_datetime(df['Entry Date'], format='%d/%m', dayfirst=True).dt.date
-    df['Entry Date'] = df['Entry Date'].apply(lambda x: x.replace(year=2000 + int(year_statement)))
+    df['Entry Date'] = pd.to_datetime(df['Entry Date'] + '/' + year_statement, format='%d/%m/%y', dayfirst=True)
 
-    # Process balances and amounts
-    df['Statement Balance 2'] = df['Transaction Description'].str.extract(r'(\d+,\d+\.\d+)')[0]
-    df['Statement Balance 2'] = df['Statement Balance 2'].str.replace(',', '').astype(float)
+    # Clean up amounts and balances
+    def clean_amount(val):
+        if isinstance(val, str):
+            val = val.strip()
+            if '+' in val or '-' in val:
+                return val
+            try:
+                float(val.replace(',', ''))
+                return val
+            except:
+                return None
+        return val
+
+    df['Transaction Amount'] = df['Transaction Amount'].apply(clean_amount)
+    df['Statement Balance'] = df['Statement Balance'].apply(clean_amount)
 
     # Clean description
-    df['Transaction Description'] = df['Transaction Description'].str.replace(r'\d+,\d+\.\d+, ', '', regex=True)
-    df['Transaction Description'] = df['Transaction Description'].str.replace(r', (\d{1,3}(?:,\d{3})*(?:\.\d{2}))$', '', regex=True)
+    df['Transaction Description'] = df['Transaction Description'].str.strip()
 
-    # Reorder and rename columns
-    df = df[['Entry Date', 'Transaction Amount', 'Transaction Description', 'Statement Balance', 'Statement Balance 2']]
-    df = df.rename(columns={
-        'Transaction Amount': 'Transaction Type',
-        'Statement Balance': 'Transaction Amount',
-        'Statement Balance 2': 'Statement_Balance'
-    })
+    # Add flow column
+    def determine_flow(amount):
+        if isinstance(amount, str):
+            return 'inflow' if '+' in amount else 'outflow'
+        return None
 
-    # Update specific transaction descriptions
-    transaction_type_mappings = {
-        'CASH WITHDRAWAL': 'CASH WITHDRAWAL',
-        'DEBIT ADVICE': 'Card Annual Fee',
-        'PROFIT PAID': 'PROFIT PAID',
-        'INTEREST PAYMENT': 'INTEREST PAYMENT',
-        'INT ON INT PAYMENT': 'INT ON INT PAYMENT'
-    }
-    
-    for trans_type, description in transaction_type_mappings.items():
-        df.loc[df['Transaction Type'] == trans_type, 'Transaction Description'] = description
-
-    # Add flow and clean amount
     df['flow'] = df['Transaction Amount'].apply(determine_flow)
+    
+    # Final cleanup
     df['Transaction Amount'] = df['Transaction Amount'].str.replace('+', '', regex=False).str.replace('-', '', regex=False)
     df['Transaction Amount'] = df['Transaction Amount'].str.replace(',', '').astype(float)
 
