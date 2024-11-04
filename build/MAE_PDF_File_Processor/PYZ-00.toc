@@ -1,4 +1,4 @@
-('C:\\Users\\pc\\Desktop\\Tkinter_mae_update\\mae_pdf_processing\\build\\MAE_PDF_File_Processor\\PYZ-00.pyz',
+('C:\\Users\\pc\\Desktop\\Github\\bank_statement\\mae_pdf_processing\\build\\MAE_PDF_File_Processor\\PYZ-00.pyz',
  [('__future__', 'C:\\anaconda\\lib\\__future__.py', 'PYMODULE'),
   ('_aix_support', 'C:\\anaconda\\lib\\_aix_support.py', 'PYMODULE'),
   ('_bootsubprocess', 'C:\\anaconda\\lib\\_bootsubprocess.py', 'PYMODULE'),
