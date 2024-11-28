@@ -5,6 +5,9 @@ import fitz  # PyMuPDF
 import pandas as pd
 import re
 import os
+from datetime import datetime
+import glob
+import pdfplumber
 
 # List of strings to remove during processing
 strings_to_remove = [
@@ -49,6 +52,8 @@ def selected_processing():
         process_files_m2u()
     elif mode == "M2U Current Account Debit":
         process_files_m2u_debit()
+    elif mode == "RHB Flex Statement Processing":
+        process_RHB_FLEX()
     else:
         messagebox.showerror("Error", "Invalid processing mode selected")
 
@@ -262,7 +267,6 @@ def process_m2u_statement(pdf_path, debug=False):
     df = df.dropna(subset=['Transaction Amount'])
 
     return df
-
 
 def process_files_m2u_debit():
     folder_path = source_path_entry.get()
@@ -667,11 +671,199 @@ def process_CIMB_DEBIT_data():
     else:
         print("No Data to Export.")
 
+# Helper functions for RHB Flex processing
+def clean_amount(amount_str):
+    """Clean and convert amount string to float."""
+    amount_str = amount_str.replace(',', '').replace(' ', '')
+    try:
+        return float(amount_str)
+    except ValueError:
+        return 0.0
+
+def determine_transaction_type(description):
+    """Determine transaction type based on description."""
+    description_upper = description.upper()
+    if any(keyword in description_upper for keyword in ["RFLX TRF DR", "RFLX TRF SC", "RFLX"]):
+        return "DR"
+    elif any(keyword in description_upper for keyword in ["DUITNOW", "INWARD IBG"]):
+        return "CR"
+    else:
+        return "UNKNOWN"
+
+def parse_transaction_line(line):
+    """Parse a single transaction line into components."""
+    try:
+        date_match = re.match(r'(\d{2}-\d{2}-\d{4})\s+(\d{3})', line)
+        if not date_match:
+            return None
+
+        date = date_match.group(1)
+        amounts = re.findall(r'[-+]?\s*[\d,]+\.\d{2}', line)
+        if not amounts:
+            return None
+
+        amounts = [clean_amount(a) for a in amounts]
+        balance = amounts[-1]
+        transaction_amount = amounts[-2] if len(amounts) >= 2 else 0.0
+
+        line_without_amounts = line
+        for amt_str in re.findall(r'[-+]?\s*[\d,]+\.\d{2}', line):
+            line_without_amounts = line_without_amounts.replace(amt_str, '')
+
+        line_without_amounts = line_without_amounts[date_match.end():].strip()
+        parts = line_without_amounts.split()
+
+        desc_parts = []
+        sender_parts = []
+        found_desc = False
+
+        for part in parts:
+            if any(keyword in part.upper() for keyword in ['DUITNOW', 'INWARD', 'RFLX', 'QR', 'POS', 'IBG', 'RPP']):
+                desc_parts.append(part)
+                found_desc = True
+            elif found_desc:
+                sender_parts.append(part)
+            else:
+                desc_parts.append(part)
+
+        description = ' '.join(desc_parts)
+        sender = ' '.join(sender_parts)
+
+        dr_amount = 0.0
+        cr_amount = 0.0
+
+        if any(re.search(r'\.50$', part) for part in sender_parts):
+            sender = re.sub(r'[-+]?\s*[\d,]+\.\d{2}', '', sender).strip()
+            dr_amount = 0.50
+        else:
+            transaction_type = determine_transaction_type(description)
+            if transaction_type == "DR":
+                dr_amount = abs(transaction_amount)
+            elif transaction_type == "CR":
+                cr_amount = abs(transaction_amount)
+            else:
+                if transaction_amount < 0:
+                    dr_amount = abs(transaction_amount)
+                else:
+                    cr_amount = transaction_amount
+
+        return {
+            'Date': date,
+            'Description': description if description else 'UNKNOWN',
+            'Sender/Beneficiary': sender if sender else 'UNKNOWN',
+            'Amount (DR)': dr_amount,
+            'Amount (CR)': cr_amount,
+            'Balance': balance
+        }
+    except Exception as e:
+        print(f"Error parsing line: {str(e)}")
+        return None
+
+def validate_transactions(df):
+    """Add a column to indicate if CR, DR, and Balance values are consistent."""
+    try:
+        # Ensure columns are strings before using .str.replace
+        df['Amount (DR)'] = df['Amount (DR)'].astype(str).str.replace(',', '').astype(float)
+        df['Amount (CR)'] = df['Amount (CR)'].astype(str).str.replace(',', '').astype(float)
+        df['Balance'] = df['Balance'].astype(str).str.replace(',', '').astype(float)
+        
+        validation_results = []
+        for i in range(len(df)):
+            if i == 0:
+                validation_results.append(True)  # First row is always True
+            else:
+                previous_balance = df.loc[i - 1, 'Balance']
+                expected_balance = previous_balance + df.loc[i, 'Amount (CR)'] - df.loc[i, 'Amount (DR)']
+                validation_results.append(abs(expected_balance - df.loc[i, 'Balance']) < 1e-2)
+        
+        df['Balance Correct'] = validation_results
+    except Exception as e:
+        print(f"Error during validation: {str(e)}")
+    return df
+
+def process_false_balances(df):
+    """Process rows with 'Balance Correct' as False."""
+    while True:
+        false_rows = df[df['Balance Correct'] == False]
+        if false_rows.empty:
+            break
+        for idx in false_rows.index:
+            if df.loc[idx, 'Amount (DR)'] > 0:
+                df.loc[idx, 'Amount (CR)'] += df.loc[idx, 'Amount (DR)']
+                df.loc[idx, 'Amount (DR)'] = 0.0
+            elif df.loc[idx, 'Amount (CR)'] > 0:
+                df.loc[idx, 'Amount (DR)'] += df.loc[idx, 'Amount (CR)']
+                df.loc[idx, 'Amount (CR)'] = 0.0
+        df = validate_transactions(df)
+    return df
+
+def extract_transactions(data):
+    transactions = []
+    lines = data.split('\n')
+    for line in lines:
+        if re.search(r'\d{2}-\d{2}-\d{4}', line):
+            transaction = parse_transaction_line(line)
+            if transaction:
+                transactions.append(transaction)
+    df = pd.DataFrame(transactions)
+    if not df.empty:
+        for col in ['Amount (DR)', 'Amount (CR)', 'Balance']:
+            if col == 'Balance':
+                df[col] = df[col].apply(lambda x: f'{abs(float(x)):,.2f}')
+            else:
+                df[col] = df[col].apply(lambda x: f'{float(x):,.2f}')
+        df = validate_transactions(df)
+    return df
+
+def extract_text_from_pdf(pdf_path):
+    text = []
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text.append(page.extract_text())
+        return '\n'.join(text)
+    except Exception as e:
+        raise Exception(f"Error extracting text from PDF: {str(e)}")
+
+def process_RHB_FLEX():
+    folder_path = source_path_entry.get()
+    export_path = export_path_entry.get()
+    excel_file_name = excel_name_entry.get()
+
+    if not folder_path or not export_path or not excel_file_name:
+        messagebox.showerror("Error", "Folder path, export path, or Excel file name is missing")
+        return
+
+    os.makedirs(export_path, exist_ok=True)
+    pdf_files = glob.glob(os.path.join(folder_path, "*.pdf"))
+    all_transactions = []  # List to hold all transactions from all PDFs
+
+    for pdf_file in pdf_files:
+        try:
+            print(f"\nProcessing file: {pdf_file}")
+            pdf_text = extract_text_from_pdf(pdf_file)
+            df = extract_transactions(pdf_text)
+            df = process_false_balances(df)
+            all_transactions.append(df)  # Append the DataFrame to the list
+        except Exception as e:
+            print(f"Error processing {pdf_file}: {str(e)}")
+
+    # Consolidate all transactions into a single DataFrame
+    if all_transactions:
+        consolidated_df = pd.concat(all_transactions, ignore_index=True)
+        excel_path = os.path.join(export_path, f"{excel_file_name}.csv")
+        consolidated_df.to_csv(excel_path, index=False)
+        print(f"\nSuccessfully consolidated all transactions into: {excel_path}")
+        messagebox.showinfo("Success", f"Data exported successfully to {excel_path}")
+    else:
+        print("No transactions to export.")
+        messagebox.showinfo("No Data", "No transactions were processed.")
+
 # GUI code
 root = tk.Tk()
 root.title("MAE PDF File Processor")
 root.configure(background='white')
-root.geometry('800x200')
+root.geometry('800x250')
 
 # Improved styling with ttk.Style
 style = ttk.Style()
@@ -693,7 +885,8 @@ processing_mode_dropdown['values'] = (
     "Maybank Credit Card Statement Processing",
     "CIMB Debit Statement Processing",
     # "M2U Current Account Statement",
-    "M2U Current Account Debit"
+    "M2U Current Account Debit",
+    "RHB Flex Statement Processing"
 )
 processing_mode_dropdown.grid(row=3, column=1, sticky=tk.EW, padx=(0, 10), pady=(5, 5))
 
