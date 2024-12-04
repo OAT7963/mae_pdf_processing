@@ -7,7 +7,7 @@ import re
 import os
 from datetime import datetime
 import glob
-import pdfplumber
+
 
 # List of strings to remove during processing
 strings_to_remove = [
@@ -671,159 +671,182 @@ def process_CIMB_DEBIT_data():
     else:
         print("No Data to Export.")
 
-# Helper functions for RHB Flex processing
-def clean_amount(amount_str):
-    """Clean and convert amount string to float."""
-    amount_str = amount_str.replace(',', '').replace(' ', '')
-    try:
-        return float(amount_str)
-    except ValueError:
-        return 0.0
-
-def determine_transaction_type(description):
-    """Determine transaction type based on description."""
-    description_upper = description.upper()
-    if any(keyword in description_upper for keyword in ["RFLX TRF DR", "RFLX TRF SC", "RFLX"]):
-        return "DR"
-    elif any(keyword in description_upper for keyword in ["DUITNOW", "INWARD IBG"]):
-        return "CR"
-    else:
-        return "UNKNOWN"
-
-def parse_transaction_line(line):
-    """Parse a single transaction line into components."""
-    try:
-        date_match = re.match(r'(\d{2}-\d{2}-\d{4})\s+(\d{3})', line)
-        if not date_match:
-            return None
-
-        date = date_match.group(1)
-        amounts = re.findall(r'[-+]?\s*[\d,]+\.\d{2}', line)
-        if not amounts:
-            return None
-
-        amounts = [clean_amount(a) for a in amounts]
-        balance = amounts[-1]
-        transaction_amount = amounts[-2] if len(amounts) >= 2 else 0.0
-
-        line_without_amounts = line
-        for amt_str in re.findall(r'[-+]?\s*[\d,]+\.\d{2}', line):
-            line_without_amounts = line_without_amounts.replace(amt_str, '')
-
-        line_without_amounts = line_without_amounts[date_match.end():].strip()
-        parts = line_without_amounts.split()
-
-        desc_parts = []
-        sender_parts = []
-        found_desc = False
-
-        for part in parts:
-            if any(keyword in part.upper() for keyword in ['DUITNOW', 'INWARD', 'RFLX', 'QR', 'POS', 'IBG', 'RPP']):
-                desc_parts.append(part)
-                found_desc = True
-            elif found_desc:
-                sender_parts.append(part)
-            else:
-                desc_parts.append(part)
-
-        description = ' '.join(desc_parts)
-        sender = ' '.join(sender_parts)
-
-        dr_amount = 0.0
-        cr_amount = 0.0
-
-        if any(re.search(r'\.50$', part) for part in sender_parts):
-            sender = re.sub(r'[-+]?\s*[\d,]+\.\d{2}', '', sender).strip()
-            dr_amount = 0.50
-        else:
-            transaction_type = determine_transaction_type(description)
-            if transaction_type == "DR":
-                dr_amount = abs(transaction_amount)
-            elif transaction_type == "CR":
-                cr_amount = abs(transaction_amount)
-            else:
-                if transaction_amount < 0:
-                    dr_amount = abs(transaction_amount)
-                else:
-                    cr_amount = transaction_amount
-
-        return {
-            'Date': date,
-            'Description': description if description else 'UNKNOWN',
-            'Sender/Beneficiary': sender if sender else 'UNKNOWN',
-            'Amount (DR)': dr_amount,
-            'Amount (CR)': cr_amount,
-            'Balance': balance
-        }
-    except Exception as e:
-        print(f"Error parsing line: {str(e)}")
-        return None
-
-def validate_transactions(df):
-    """Add a column to indicate if CR, DR, and Balance values are consistent."""
-    try:
-        # Ensure columns are strings before using .str.replace
-        df['Amount (DR)'] = df['Amount (DR)'].astype(str).str.replace(',', '').astype(float)
-        df['Amount (CR)'] = df['Amount (CR)'].astype(str).str.replace(',', '').astype(float)
-        df['Balance'] = df['Balance'].astype(str).str.replace(',', '').astype(float)
-        
-        validation_results = []
-        for i in range(len(df)):
-            if i == 0:
-                validation_results.append(True)  # First row is always True
-            else:
-                previous_balance = df.loc[i - 1, 'Balance']
-                expected_balance = previous_balance + df.loc[i, 'Amount (CR)'] - df.loc[i, 'Amount (DR)']
-                validation_results.append(abs(expected_balance - df.loc[i, 'Balance']) < 1e-2)
-        
-        df['Balance Correct'] = validation_results
-    except Exception as e:
-        print(f"Error during validation: {str(e)}")
-    return df
-
-def process_false_balances(df):
-    """Process rows with 'Balance Correct' as False."""
-    while True:
-        false_rows = df[df['Balance Correct'] == False]
-        if false_rows.empty:
-            break
-        for idx in false_rows.index:
-            if df.loc[idx, 'Amount (DR)'] > 0:
-                df.loc[idx, 'Amount (CR)'] += df.loc[idx, 'Amount (DR)']
-                df.loc[idx, 'Amount (DR)'] = 0.0
-            elif df.loc[idx, 'Amount (CR)'] > 0:
-                df.loc[idx, 'Amount (DR)'] += df.loc[idx, 'Amount (CR)']
-                df.loc[idx, 'Amount (CR)'] = 0.0
-        df = validate_transactions(df)
-    return df
-
-def extract_transactions(data):
+# Updated extract_statement_data function
+def extract_statement_data(file_path):
+    # Open the PDF
+    doc = fitz.open(file_path)
+    
+    # List to store transactions
     transactions = []
-    lines = data.split('\n')
-    for line in lines:
-        if re.search(r'\d{2}-\d{2}-\d{4}', line):
-            transaction = parse_transaction_line(line)
-            if transaction:
-                transactions.append(transaction)
-    df = pd.DataFrame(transactions)
-    if not df.empty:
-        for col in ['Amount (DR)', 'Amount (CR)', 'Balance']:
-            if col == 'Balance':
-                df[col] = df[col].apply(lambda x: f'{abs(float(x)):,.2f}')
+    current_transaction = None
+    
+    # Process each page
+    for page in doc:
+        # Get text from page
+        text = page.get_text()
+        
+        # Split text into lines
+        lines = text.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            # Match date pattern DD-MM-YYYY or DD-MM-YY
+            date_match = re.match(r'(\d{2}-\d{2}-\d{4}|\d{2}-\d{2}-\d{2})', line)
+            if date_match:
+                # Start of new transaction
+                if current_transaction is not None:
+                    # Add the previous transaction to the list
+                    transactions.append(current_transaction)
+                # Create new transaction
+                current_transaction = {'Date': date_match.group(1), 'Lines': []}
+            elif current_transaction is not None:
+                # Add line to current transaction
+                current_transaction['Lines'].append(line)
             else:
-                df[col] = df[col].apply(lambda x: f'{float(x):,.2f}')
-        df = validate_transactions(df)
+                # Line before the first date, skip or handle as needed
+                pass
+    # Add the last transaction
+    if current_transaction is not None:
+        transactions.append(current_transaction)
+        
+    # Now process each transaction to extract fields
+    data = []
+    for t in transactions:
+        date = t['Date']
+        lines = t['Lines']
+        combined_text = ' '.join(lines).strip()
+        description = ''
+        sender_beneficiary = ''
+        amount_dr = ''
+        amount_cr = ''
+        
+        # Extract amount with DR or CR or +/- at the end
+        amount_match = re.search(r'([\d,]+\.\d{2})\s*(DR|CR|\+|\-)?$', combined_text)
+        if amount_match:
+            amount = amount_match.group(1).replace(',', '')
+            sign = amount_match.group(2)
+            if sign in ['DR', '-']:
+                amount_dr = amount
+            elif sign in ['CR', '+']:
+                amount_cr = amount
+            else:
+                # If no sign, you may decide default behavior
+                amount_cr = amount  # Assuming default is credit
+            # Remove amount and sign from combined_text
+            combined_text = combined_text[:amount_match.start()].strip()
+        
+        # Define possible transaction types
+        transaction_types = [
+            'DUITNOW QR POS CR', 'INWARD IBG', 'RFLX', 'DUITNOW',
+            'RPP INWARD INST TRF', 'LOCAL CHQ', 'REFLEX-FUNDS TFR DR',
+            'MB FUND', 'CASH DEPOSIT', 'RPP INWARD', 'REFLEX-FUNDS TFR',
+            'REFLEX- FUNDS TFR DR', 'RFLX INSTANT TRF DR', 'RFLX INSTANT TRF SC'
+        ]
+        
+        # Extract description
+        description_found = False
+        for t_type in transaction_types:
+            if t_type in combined_text:
+                description = t_type
+                description_found = True
+                break
+        if description_found:
+            # Remove description from combined_text
+            remaining_text = combined_text.replace(description, '').strip()
+        else:
+            remaining_text = combined_text
+        
+        sender_beneficiary = remaining_text
+        
+        # Append the extracted data
+        data.append({
+            'Date': date,
+            'Description': description,
+            'Sender/Beneficiary': sender_beneficiary,
+            'Amount (DR)': amount_dr,
+            'Amount (CR)': amount_cr
+        })
+    
+    # Create DataFrame
+    df = pd.DataFrame(data)
+    
+    # Optionally, format the date to match desired output (e.g., '01-08-24')
+    df['Date'] = pd.to_datetime(df['Date'], format='%d-%m-%Y', errors='coerce').fillna(
+                  pd.to_datetime(df['Date'], format='%d-%m-%y', errors='coerce'))
+    df['Date'] = df['Date'].dt.strftime('%d-%m-%y')
+    
+    # Process 'Sender/Beneficiary' column to extract 'Balance', 'Sender/Beneficiary', and 'Recipient Reference'
+    def process_sender_beneficiary(s):
+        s = s.strip()
+        balance = ''
+        new_sender_beneficiary = ''
+        recipient_reference = ''
+        # Check if the string starts with a number ending with '+'
+        match = re.match(r'^([\d,]+\.\d{2}\+)\s*(.*)', s)
+        if match:
+            balance = match.group(1)  # Extract the balance including '+'
+            remaining_text = match.group(2)
+            # After '+', take the next three words
+            words = remaining_text.split()
+            first_three_words = ' '.join(words[:3])
+            new_sender_beneficiary = first_three_words
+            # The remaining words after the first three words
+            remaining_words = words[3:]
+            recipient_reference = ' '.join(remaining_words)
+            # Apply cleaning rules to recipient_reference
+            if recipient_reference:
+                tokens = recipient_reference.split()
+                cleaned_tokens = []
+                for token in tokens:
+                    # Remove tokens with 8+ letters and numbers together
+                    if len(token) >= 8 and re.search(r'[A-Za-z]', token) and re.search(r'\d', token):
+                        continue  # Skip this token
+                    # Remove tokens with exactly 3 digits
+                    elif re.match(r'^\d{3}$', token):
+                        continue  # Skip this token
+                    # Remove tokens with 8+ digits
+                    elif re.match(r'^\d{8,}$', token):
+                        continue  # Skip this token
+                    else:
+                        cleaned_tokens.append(token)
+                recipient_reference = ' '.join(cleaned_tokens)
+                # Remove unwanted patterns from recipient_reference
+                unwanted_patterns = [
+                    r'06/\s*\d+\s*/\s*-\s*',       # Matches '06/ 6 / -'
+                    r'/\s*\d{3,}\s*/\s*-\s*',      # Matches '/ 5508/ -', '/ 4621/ -'
+                    r'www\.rhbgroup\.com.*',       # Matches from 'www.rhbgroup.com' onwards
+                    r'For Any Enquiries.*',        # Matches 'For Any Enquiries...'
+                    r'Date Branch Description.*',  # Matches 'Date Branch Description...'
+                    r'Reference 1 / Recipient\'s Reference.*',
+                    r'Reference 2 / Other Payment Details.*',
+                    r'RefNum.*',
+                    r'Amount \(DR\).*',
+                    r'Amount \(CR\).*',
+                    r'Balance Sender\'s / Beneficiary\'s Name.*',
+                    r'Sender\'s / Beneficiary\'s Name.*',
+                ]
+                for pattern in unwanted_patterns:
+                    recipient_reference = re.sub(pattern, '', recipient_reference, flags=re.IGNORECASE)
+                # Remove extra whitespace
+                recipient_reference = ' '.join(recipient_reference.split())
+        else:
+            new_sender_beneficiary = s
+        return pd.Series([balance, new_sender_beneficiary, recipient_reference])
+    
+    # Apply the function to create 'Balance', update 'Sender/Beneficiary', and create 'Recipient Reference'
+    df[['Balance', 'Sender/Beneficiary', 'Recipient Reference']] = df['Sender/Beneficiary'].apply(process_sender_beneficiary)
+    
+    # Shift 'Recipient Reference' down by one row
+    df['Recipient Reference'] = df['Recipient Reference'].shift(1)
+    
+    # Shift 'Amount (DR)' and 'Amount (CR)' down by one row
+    df['Amount (DR)'] = df['Amount (DR)'].shift(1)
+    df['Amount (CR)'] = df['Amount (CR)'].shift(1)
+    
+    # Reset index if needed
+    df = df.reset_index(drop=True)
+    
     return df
-
-def extract_text_from_pdf(pdf_path):
-    text = []
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                text.append(page.extract_text())
-        return '\n'.join(text)
-    except Exception as e:
-        raise Exception(f"Error extracting text from PDF: {str(e)}")
 
 def process_RHB_FLEX():
     folder_path = source_path_entry.get()
@@ -841,9 +864,7 @@ def process_RHB_FLEX():
     for pdf_file in pdf_files:
         try:
             print(f"\nProcessing file: {pdf_file}")
-            pdf_text = extract_text_from_pdf(pdf_file)
-            df = extract_transactions(pdf_text)
-            df = process_false_balances(df)
+            df = extract_statement_data(pdf_file)
             all_transactions.append(df)  # Append the DataFrame to the list
         except Exception as e:
             print(f"Error processing {pdf_file}: {str(e)}")
