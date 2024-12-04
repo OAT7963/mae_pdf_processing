@@ -2,6 +2,7 @@
 1. Maybank Debit (Savings and Current)
 2. Maybank Credit (Normal and Premier)
 3. CIMB Savings
+4. RHB Flex
 
    
 # Maybank Credit/Debit Card and CIMB Debit Statement Processing
