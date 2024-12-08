@@ -61,6 +61,10 @@ I've cleaned up the data a little, you will see the location and more descriptiv
 
 ![alt text](/image/output_cc_example.png)
 
+## For those who want to learn Python can check out my other project here
+1. https://store.steampowered.com/app/3332030/PYONEERS/
+2. https://www.instagram.com/oat_academy/
+
 
 
 
