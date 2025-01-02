@@ -22,7 +22,8 @@ strings_to_remove = [
     "結單存餘",
     "URUSNIAGA AKAUN/ 戶口進支項/ACCOUNT TRANSACTIONS",
     "TARIKH NILAI",
-    "仄過賬日期"
+    "仄過賬日期",
+    "戶號"
 ]
 
 # Improved directory selection row creation
