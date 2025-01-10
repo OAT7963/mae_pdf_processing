@@ -41,7 +41,7 @@ For queries, reach out at ongaunter@gmail.com.
 
 
 
-## Before pressing run, this is how your program interface should look like
+## Before pressing "Process Files and Export to Excel", this is how your program interface should look like
 
 ![alt text](/image/program_look.png)
 
